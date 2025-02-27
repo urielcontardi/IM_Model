@@ -1,2 +1,1 @@
-# IM_Model
-Induction Machine Model
+# Induction Machine Model
