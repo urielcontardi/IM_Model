@@ -1,6 +1,8 @@
 /// \file		psim.c
 ///
-/// \brief	
+/// \brief		This dll is unique to PSIM and Plecs. The compilation option
+///				for one or the other is done by defining the macros:
+///				TARGET_PLECS or TARGET_PSIM
 ///
 /// \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
 /// \date		27-02-2025
@@ -15,6 +17,12 @@
 //                               INCLUDES                                   //
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
+#define TARGET_PSIM
+
+#ifdef TARGET_PLECS
+#include <DllHeader.h>
+#endif
+
 #include <windows.h>
 #include <IM_Model.h>
 
@@ -52,6 +60,7 @@ typedef enum
     IB,
     IC,
     WR,
+    WMEC,
 	TOTAL_OUTPUTS
 } Outputs_t;
 
@@ -61,8 +70,8 @@ typedef enum
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 static IM_Model_t* _getIMInstance(void);
-static void _setParameters(IM_Model_t* model, double *simInputs);
-static void _setInputs(IM_Model_t* model, double *simInputs);
+static void _setParameters(IM_Model_t* model, const double *simInputs);
+static void _setInputs(IM_Model_t* model, const double *simInputs);
 
 //////////////////////////////////////////////////////////////////////////////
 //                                                                          //
@@ -75,6 +84,8 @@ static void _setInputs(IM_Model_t* model, double *simInputs);
 //                            EXPORTED FUNCTIONS                            //
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
+
+#ifdef TARGET_PSIM
 __declspec(dllexport) void simuser(double t, double delt, double *simInputs, double *simOut);
 
 __declspec(dllexport) void simuser(t, delt, simInputs, simOut)
@@ -94,12 +105,60 @@ __declspec(dllexport) void simuser(t, delt, simInputs, simOut)
     _setInputs(pIM, simInputs);
     IM_SimulateStep(pIM);
 
+    // double *privData = (double *)pIM->priv;
     simOut[IA] = (double)pIM->out.ia;
     simOut[IB] = (double)pIM->out.ib;
     simOut[IC] = (double)pIM->out.ic;
     simOut[WR] = (double)pIM->out.wr;
+    simOut[WMEC] = (double)pIM->out.wmec;
 
 }
+#endif
+
+#ifdef TARGET_PLECS
+DLLEXPORT void plecsSetSizes(struct SimulationSizes* aSizes)
+{
+   aSizes->numInputs = TOTAL_INPUTS;
+   aSizes->numOutputs = TOTAL_OUTPUTS;
+   aSizes->numStates = 0;
+   aSizes->numParameters = 0;
+}
+
+//This function is automatically called at the beginning of the simulation
+DLLEXPORT void plecsStart(struct SimulationState* aState)
+{
+
+}
+
+//This function is automatically called every sample time
+//output is written to DLL output port after the output delay
+DLLEXPORT void plecsOutput(struct SimulationState* aState)
+{
+	const double* simInputs = aState->inputs;
+	double* simOut = aState->outputs;
+    double t = aState->time;
+    const double DELT = 5e-6;
+
+    IM_Model_t* pIM = _getIMInstance();
+
+    // Only runs the _setup when it's the first simulation cycle
+	if (t <= DELT){
+        IM_Init(pIM);
+        _setParameters(pIM, simInputs);
+    }
+
+    _setInputs(pIM, simInputs);
+    IM_SimulateStep(pIM);
+    _setInputs(pIM, simInputs);
+    IM_SimulateStep(pIM);
+
+    simOut[IA] = (double)pIM->out.ia;
+    simOut[IB] = (double)pIM->out.ib;
+    simOut[IC] = (double)pIM->out.ic;
+    simOut[WR] = (double)pIM->out.wr;
+}
+#endif
+
 
 //////////////////////////////////////////////////////////////////////////////
 //                                                                          //
@@ -112,7 +171,7 @@ static IM_Model_t* _getIMInstance(void)
 	return &model;
 }
 
-static void _setParameters(IM_Model_t* model, double *simInputs)
+static void _setParameters(IM_Model_t* model, const double *simInputs)
 {
     IMParams params;
     params.Rs = simInputs[RS];
@@ -126,7 +185,7 @@ static void _setParameters(IM_Model_t* model, double *simInputs)
     IM_SetParams(model, &params);
 }
 
-static void _setInputs(IM_Model_t* model, double *simInputs)
+static void _setInputs(IM_Model_t* model,const double *simInputs)
 {
     IMInputs inp;
     inp.Va = simInputs[VA];

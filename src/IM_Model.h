@@ -48,6 +48,7 @@ typedef struct {
     double ib;
     double ic;
     double wr;
+    double wmec;
 } IMOutputs;
 
 typedef struct {

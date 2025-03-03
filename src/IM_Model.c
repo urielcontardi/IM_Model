@@ -31,15 +31,18 @@
 //                      LOCAL TYPEDEFS AND STRUCTURES                       //
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
-typedef struct {    
-    double is_alpha;
-    double is_beta;
+typedef struct {
+    double dis_alpha;    // derivative
+    double dis_beta;     // derivative
     double dfluxR_alpha; // derivative
     double dfluxR_beta; // derivative
+    double dwmec;       // derivative
+    double is_alpha;
+    double is_beta;
     double fluxR_alpha;
     double fluxR_beta;
+    double wmec;
     double Te;
-    double w;
 } IM_States_t;
 
 typedef struct {
@@ -166,28 +169,31 @@ void _updateStates(IM_Model_t *self) {
     double dfluxR_beta = states->dfluxR_beta;
     double fluxR_alpha = states->fluxR_alpha;
     double fluxR_beta = states->fluxR_beta;
-    double w = states->w;
+    double wmec = states->wmec;
+    double w = wmec * npp;
+    double Te = states->Te;
 
     // Inputs (u_alpha, u_beta)
     double u_alpha = intInputs->valpha;
     double u_beta = intInputs->vbeta;
     double Tload = self->inp.Tload;
 
-    // Update Currents
-    states->is_alpha = is_alpha + (Lr/(Lm*Lm-Ls))*(Rs*is_alpha+(Lm*dfluxR_alpha/Lr)-u_alpha) * Ts;
-    states->is_beta = is_beta + (Lr/(Lm*Lm-Ls))*(Rs*is_beta+(Lm*dfluxR_alpha/Lr)-u_beta) * Ts;
-
-    // Update Flux
-    states->dfluxR_alpha = (states->is_alpha*Rr*Lm/Lr)-(npp*w*fluxR_beta)-(Rr*Lm*fluxR_alpha/Lr);
-    states->dfluxR_beta = (states->is_beta*Rr*Lm/Lr)+(npp*w*dfluxR_beta)-(Rr*Lm*fluxR_beta/Lr);
-    states->fluxR_alpha = states->fluxR_alpha + states->dfluxR_alpha * Ts;
-    states->fluxR_beta = states->fluxR_beta + states->dfluxR_beta * Ts;
+    // Derivative: Currents / Flux / Speed
+    states->dis_alpha = (1/Ls)*(u_alpha - Rs*is_alpha - Lm*dfluxR_alpha);
+    states->dis_beta = (1/Ls)*(u_beta - Rs*is_beta - Lm*dfluxR_beta);
+    states->dfluxR_alpha = (Rr*Lm/Lr)*is_alpha + w*fluxR_beta - (Rr/Lr)*fluxR_alpha;
+    states->dfluxR_beta = (Rr*Lm/Lr)*is_beta + w*fluxR_alpha - (Rr/Lr)*fluxR_beta;
+    states->dwmec = (Te-Tload)/J;
 
     // Update Torque
-    states->Te = ((3*npp*Lm)/(2*Lr))*(states->fluxR_alpha*states->is_beta-states->fluxR_beta*states->is_alpha);
-    
-    // Update Speed
-    states->w = states->w + ((states->Te-Tload)/J) * Ts;
+    states->Te = ((3*npp*Lm)/(2*Lr))*(fluxR_alpha*is_beta - fluxR_beta*is_alpha);
+
+    // Update States
+    states->is_alpha    = states->is_alpha + states->dis_alpha * Ts;
+    states->is_beta     = states->is_beta + states->dis_beta * Ts;
+    states->fluxR_alpha = states->fluxR_alpha + states->dfluxR_alpha * Ts;
+    states->fluxR_beta  = states->fluxR_beta + states->dfluxR_beta * Ts;
+    states->wmec        = states->wmec + states->dwmec * Ts;
 }
 
 void _updateOutputs(IM_Model_t *self) {
@@ -200,6 +206,7 @@ void _updateOutputs(IM_Model_t *self) {
     self->out.ia = states->is_alpha + intInputs->v0;
     self->out.ib = -0.5 * states->is_alpha + (sqrt(3.0) / 2.0) * states->is_beta + intInputs->v0;
     self->out.ic = -0.5 * states->is_alpha - (sqrt(3.0) / 2.0) * states->is_beta + intInputs->v0;
-    self->out.wr = states->w;
+    self->out.wmec = states->wmec;
+    self->out.wr = states->wmec * self->params.npp;
 
 }
