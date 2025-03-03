@@ -1,7 +1,6 @@
 /// \file		IM_Model.c
 ///
-/// \brief	    FPGA based real-time model of three-phase induction machine
-///             https://ieeexplore.ieee.org/document/8395534
+/// \brief	    
 ///
 /// \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
 /// \date		26-01-2025
@@ -33,17 +32,11 @@
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 typedef struct {
-    double dis_alpha;    // derivative
-    double dis_beta;     // derivative
-    double dfluxR_alpha; // derivative
-    double dfluxR_beta; // derivative
-    double dwmec;       // derivative
-    double is_alpha;
-    double is_beta;
-    double fluxR_alpha;
-    double fluxR_beta;
+    double is_alpha;   
+    double is_beta;    
+    double ir_alpha;
+    double ir_beta;
     double wmec;
-    double Te;
 } IM_States_t;
 
 typedef struct {
@@ -55,6 +48,7 @@ typedef struct {
 typedef struct {
     IM_InternalInputs_t inp;
     IM_States_t states;
+    IM_States_t out;
 } IM_PrivateData_t;
 
 //////////////////////////////////////////////////////////////////////////////
@@ -73,7 +67,7 @@ static void _updateOutputs(IM_Model_t *self);
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 
-static IM_PrivateData_t _privateData;
+static IM_PrivateData_t _privateData = {0};
 
 //////////////////////////////////////////////////////////////////////////////
 //                                                                          //
@@ -143,7 +137,7 @@ void _vabc2AphaBeta(IM_Model_t *self) {
     IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
     IM_InternalInputs_t *intInputs = &privateData->inp;
     intInputs->valpha = (2.0 / 3.0) * (Va - 0.5 * Vb - 0.5 * Vc);
-    intInputs->vbeta =  (1.0 / sqrt(3.0)) * (Vb - Vc);
+    intInputs->vbeta =  (sqrt(3.0) / 3.0) * (Vb - Vc);
     intInputs->v0 = (1.0/3.0) * (Va+Vb+Vc);
 
 }
@@ -151,63 +145,74 @@ void _vabc2AphaBeta(IM_Model_t *self) {
 void _updateStates(IM_Model_t *self) {
     IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
     IM_States_t *states = &privateData->states;
+    IM_States_t *out = &privateData->out;
     IM_InternalInputs_t *intInputs = &privateData->inp;
 
     // MIT Parameters
     double Rs  = self->params.Rs;
     double Rr  = self->params.Rr;
-    double Lm  = self->params.Lm;
-    double Ls  = self->params.Ls;
-    double Lr  = self->params.Lr;
+    double Lm  = (3.0/2.0)*self->params.Lm;
+    double Ls  = (3.0/2.0)*self->params.Ls;
+    double Lr  = (3.0/2.0)*self->params.Lr;
     double J   = self->params.J; 
     double npp = self->params.npp;
     double Ts  = self->params.Ts;
-
-    // Last States
-    double is_alpha = states->is_alpha;
-    double is_beta = states->is_beta;
-    double dfluxR_alpha = states->dfluxR_alpha;
-    double dfluxR_beta = states->dfluxR_beta;
-    double fluxR_alpha = states->fluxR_alpha;
-    double fluxR_beta = states->fluxR_beta;
-    double wmec = states->wmec;
-    double w = wmec * npp;
-    double Te = states->Te;
 
     // Inputs (u_alpha, u_beta)
     double u_alpha = intInputs->valpha;
     double u_beta = intInputs->vbeta;
     double Tload = self->inp.Tload;
 
-    // Derivative: Currents / Flux / Speed
-    states->dis_alpha = (1/Ls)*(u_alpha - Rs*is_alpha - Lm*dfluxR_alpha);
-    states->dis_beta = (1/Ls)*(u_beta - Rs*is_beta - Lm*dfluxR_beta);
-    states->dfluxR_alpha = (Rr*Lm/Lr)*is_alpha + w*fluxR_beta - (Rr/Lr)*fluxR_alpha;
-    states->dfluxR_beta = (Rr*Lm/Lr)*is_beta + w*fluxR_alpha - (Rr/Lr)*fluxR_beta;
-    states->dwmec = (Te-Tload)/J;
-
-    // Update Torque
-    states->Te = ((3*npp*Lm)/(2*Lr))*(fluxR_alpha*is_beta - fluxR_beta*is_alpha);
+    double sigma = (double) 1.0f/(Ls*Lr-Lm*Lm);
 
     // Update States
-    states->is_alpha    = states->is_alpha + states->dis_alpha * Ts;
-    states->is_beta     = states->is_beta + states->dis_beta * Ts;
-    states->fluxR_alpha = states->fluxR_alpha + states->dfluxR_alpha * Ts;
-    states->fluxR_beta  = states->fluxR_beta + states->dfluxR_beta * Ts;
-    states->wmec        = states->wmec + states->dwmec * Ts;
+    states->is_alpha = sigma * (
+                                (Lr * (u_alpha - Rs*out->is_alpha)) +
+                                (-Lm * (-npp*out->wmec*(Lm*out->is_beta + Lr * out->ir_beta) - Rr * out->ir_alpha))
+                                );
+
+    states->ir_alpha = sigma * (
+                               (-Lm * (u_alpha - Rs*out->is_alpha)) + 
+                               (Ls * (-npp*out->wmec*(Lm*out->is_beta + Lr * out->ir_beta) - Rr * out->ir_alpha))
+                               );
+
+    states->is_beta = sigma * (
+                                (Lr * (u_beta - Rs*out->is_beta)) +
+                                (-Lm * (npp*out->wmec*(Lm*out->is_alpha + Lr * out->ir_alpha) - Rr * out->ir_beta))
+                                );
+
+    states->ir_beta = sigma * (
+                            (-Lm * (u_beta - Rs*out->is_beta)) +
+                            (Ls * (npp*out->wmec*(Lm*out->is_alpha + Lr * out->ir_alpha) - Rr * out->ir_beta))
+                            );
+
+    // Torque
+    double Te = (3.0/2.0) * (npp * Lm / Lr) * 
+                ((Lm * out->is_alpha + Lr * out->ir_alpha) * out->is_beta -
+                (Lm * out->is_beta  + Lr * out->ir_beta)  * out->is_alpha);
+  
+    states->wmec = (Te - Tload) / J;
+
+    // Euler Discretization
+    out->is_alpha    = out->is_alpha + states->is_alpha * Ts;
+    out->is_beta     = out->is_beta + states->is_beta * Ts;
+    out->ir_alpha    = out->ir_alpha + states->ir_alpha * Ts;
+    out->ir_beta     = out->ir_beta + states->ir_beta * Ts;
+    out->wmec        = out->wmec + states->wmec * Ts;
+
 }
 
 void _updateOutputs(IM_Model_t *self) {
 
     IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
-    IM_States_t *states = &privateData->states;
+    IM_States_t *out = &privateData->out;
     IM_InternalInputs_t *intInputs = &privateData->inp;
 
     // Inverse Clarke Transform (αβ -> abc)
-    self->out.ia = states->is_alpha + intInputs->v0;
-    self->out.ib = -0.5 * states->is_alpha + (sqrt(3.0) / 2.0) * states->is_beta + intInputs->v0;
-    self->out.ic = -0.5 * states->is_alpha - (sqrt(3.0) / 2.0) * states->is_beta + intInputs->v0;
-    self->out.wmec = states->wmec;
-    self->out.wr = states->wmec * self->params.npp;
+    self->out.ia = out->is_alpha + intInputs->v0;
+    self->out.ib = -0.5 * out->is_alpha + (sqrt(3.0) / 2.0) * out->is_beta + intInputs->v0;
+    self->out.ic = -0.5 * out->is_alpha - (sqrt(3.0) / 2.0) * out->is_beta + intInputs->v0;
+    self->out.wmec = out->wmec;
+    self->out.wr = out->wmec * self->params.npp;
 
 }
