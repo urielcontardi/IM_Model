@@ -36,7 +36,7 @@ typedef struct {
     double is_beta;    
     double ir_alpha;
     double ir_beta;
-    double wmec;
+    double wr;
 } IM_States_t;
 
 typedef struct {
@@ -138,7 +138,7 @@ void _vabc2AphaBeta(IM_Model_t *self) {
     IM_InternalInputs_t *intInputs = &privateData->inp;
     intInputs->valpha = (2.0 / 3.0) * (Va - 0.5 * Vb - 0.5 * Vc);
     intInputs->vbeta =  (sqrt(3.0) / 3.0) * (Vb - Vc);
-    intInputs->v0 = (1.0/3.0) * (Va+Vb+Vc);
+    intInputs->v0 = 0.0f; // (1.0/3.0) * (Va+Vb+Vc);
 
 }
 
@@ -163,42 +163,41 @@ void _updateStates(IM_Model_t *self) {
     double u_beta = intInputs->vbeta;
     double Tload = self->inp.Tload;
 
-    double sigma = (double) 1.0f/(Ls*Lr-Lm*Lm);
+    double sigma = (double) 1.0f/(Lm*Lm - Lr*Ls);
 
     // Update States
     states->is_alpha = sigma * (
-                                (Lr * (u_alpha - Rs*out->is_alpha)) +
-                                (-Lm * (-npp*out->wmec*(Lm*out->is_beta + Lr * out->ir_beta) - Rr * out->ir_alpha))
-                                );
-
-    states->ir_alpha = sigma * (
-                               (-Lm * (u_alpha - Rs*out->is_alpha)) + 
-                               (Ls * (-npp*out->wmec*(Lm*out->is_beta + Lr * out->ir_beta) - Rr * out->ir_alpha))
-                               );
+                                -Lm * (Lm*out->wr*out->is_beta + Lr*out->wr*out->ir_beta + Rr*out->ir_alpha) +
+                                Lr * (Rs*out->is_alpha - u_alpha)
+                            );
 
     states->is_beta = sigma * (
-                                (Lr * (u_beta - Rs*out->is_beta)) +
-                                (-Lm * (npp*out->wmec*(Lm*out->is_alpha + Lr * out->ir_alpha) - Rr * out->ir_beta))
-                                );
+                                Lm * (Lm*out->wr*out->is_alpha + Lr*out->wr*out->ir_alpha - Rr*out->ir_beta) +
+                                Lr * (Rs*out->is_beta - u_beta)
+                            );
+
+    states->ir_alpha = sigma * (
+                                -Lm * (Rs*out->is_alpha - u_alpha) + 
+                                Ls * (Lm*out->wr*out->is_beta + Lr*out->wr*out->ir_beta + Rr*out->ir_alpha)
+                            );
 
     states->ir_beta = sigma * (
-                            (-Lm * (u_beta - Rs*out->is_beta)) +
-                            (Ls * (npp*out->wmec*(Lm*out->is_alpha + Lr * out->ir_alpha) - Rr * out->ir_beta))
+                                -Lm * (Rs*out->is_beta - u_beta) -
+                                Ls * (Lm*out->wr*out->is_alpha + Lr*out->wr*out->ir_alpha - Rr*out->ir_beta)
                             );
 
     // Torque
-    double Te = (3.0/2.0) * (npp * Lm / Lr) * 
-                ((Lm * out->is_alpha + Lr * out->ir_alpha) * out->is_beta -
-                (Lm * out->is_beta  + Lr * out->ir_beta)  * out->is_alpha);
-  
-    states->wmec = (Te - Tload) / J;
+    double Te = (npp*Lm/3.0)*(out->ir_alpha*out->is_beta - out->ir_beta*out->is_alpha);
+
+    // Speed
+    states->wr = (npp/(2*J))*(Te - Tload);
 
     // Euler Discretization
     out->is_alpha    = out->is_alpha + states->is_alpha * Ts;
     out->is_beta     = out->is_beta + states->is_beta * Ts;
     out->ir_alpha    = out->ir_alpha + states->ir_alpha * Ts;
     out->ir_beta     = out->ir_beta + states->ir_beta * Ts;
-    out->wmec        = out->wmec + states->wmec * Ts;
+    out->wr          = out->wr + states->wr * Ts;
 
 }
 
@@ -212,7 +211,7 @@ void _updateOutputs(IM_Model_t *self) {
     self->out.ia = out->is_alpha + intInputs->v0;
     self->out.ib = -0.5 * out->is_alpha + (sqrt(3.0) / 2.0) * out->is_beta + intInputs->v0;
     self->out.ic = -0.5 * out->is_alpha - (sqrt(3.0) / 2.0) * out->is_beta + intInputs->v0;
-    self->out.wmec = out->wmec;
-    self->out.wr = out->wmec * self->params.npp;
+    self->out.wmec = out->wr * self->params.npp;
+    self->out.wr = out->wr;
 
 }
