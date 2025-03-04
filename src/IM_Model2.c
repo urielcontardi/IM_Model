@@ -47,7 +47,6 @@ typedef struct {
 
 typedef struct {
     IM_InternalInputs_t inp;
-    IM_States_t states;
     IM_States_t out;
 } IM_PrivateData_t;
 
@@ -144,61 +143,69 @@ void _vabc2AphaBeta(IM_Model_t *self) {
 
 void _updateStates(IM_Model_t *self) {
     IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
-    IM_States_t *states = &privateData->states;
     IM_States_t *out = &privateData->out;
     IM_InternalInputs_t *intInputs = &privateData->inp;
 
     // MIT Parameters
     double Rs  = self->params.Rs;
     double Rr  = self->params.Rr;
-    double Lm  = (3.0/2.0)*self->params.Lm;
-    double Ls  = (3.0/2.0)*self->params.Ls;
-    double Lr  = (3.0/2.0)*self->params.Lr;
+    double Lm  = self->params.Lm;
+    double Ls  = self->params.Ls;
+    double Lr  = self->params.Lr;
     double J   = self->params.J; 
     double npp = self->params.npp;
     double Ts  = self->params.Ts;
 
-    // Inputs (u_alpha, u_beta)
-    double u_alpha = intInputs->valpha;
-    double u_beta = intInputs->vbeta;
-    double Tload = self->inp.Tload;
+    // Inputs (v_alpha, v_beta)
+    double v_alpha_s = intInputs->valpha;
+    double v_beta_s  = intInputs->vbeta;
+    double v_alpha_r = 0.0f; // Induction Motor
+    double v_beta_r  = 0.0f;
+    double Tload     = self->inp.Tload;
+    double sigma = 1.0 / (Lm*Lm - Lr*Ls);
+    double wr = out->wr;
 
-    double sigma = (double) 1.0f/(Lm*Lm - Lr*Ls);
+    // A_d / B_d Matrix
+    double Ad[4][4] = {
+        {sigma * Ts * (-Lr*Rs) + 1.0,     sigma * Ts * (-Lm*Lm*wr),    sigma * Ts * (-Lm*Rr),     sigma * Ts * (-Lm*Lr*wr)    },
+        {sigma * Ts * (Lm*Lm*wr),   sigma * Ts * (Lr*Rs) + 1.0,        sigma * Ts * (Lm*Lr*wr),   sigma * Ts * (-Lm*Rr)       },
+        {sigma * Ts * (-Lm*Rs),     sigma * Ts * (Lm*Ls*wr),     sigma * Ts * (Ls*Rr) + 1.0,      sigma * Ts * (Lr*Ls*wr)     },
+        {sigma * Ts * (-Lm*Ls*wr),  sigma * Ts * (-Lm*Rs),       sigma * Ts * (-Lr*Ls*wr),  sigma * Ts * (Ls*Rr) + 1.0       }
+    };
+    
+    double Bd[4][4] = {
+        {-Lr * Ts * sigma,      0,                          Lm * Ts * sigma,            0                   },
+        {0,                     -Lr * Ts * sigma,           0,                          Lm * Ts * sigma     },
+        {Lm * Ts * sigma,       0,                          -Ls * Ts * sigma ,          0                   },
+        {0,                     Lm * Ts * sigma,            0,                          -Ls * Ts * sigma    }
+    };
+
+    // States
+    double Ik[4] = {out->is_alpha, out->is_beta, out->ir_alpha, out->ir_beta};
+    double Vk[4] = {v_alpha_s, v_beta_s, v_alpha_r, v_beta_r};
+    double Iknext[4] = {0};
 
     // Update States
-    states->is_alpha = sigma * (
-                                -Lm * (Lm*out->wr*out->is_beta + Lr*out->wr*out->ir_beta + Rr*out->ir_alpha) +
-                                Lr * (Rs*out->is_alpha - u_alpha)
-                            );
+    for (int i = 0; i < 4; i++) {
+        Iknext[i] = 0;
+        for (int j = 0; j < 4; j++) {
+            Iknext[i] += Ad[i][j] * Ik[j];
+            Iknext[i] += Bd[i][j] * Vk[j];
+        }
+    }
 
-    states->is_beta = sigma * (
-                                Lm * (Lm*out->wr*out->is_alpha + Lr*out->wr*out->ir_alpha - Rr*out->ir_beta) +
-                                Lr * (Rs*out->is_beta - u_beta)
-                            );
+    // Update Torque
+    double Te = (npp * Lm / 3.0) * (Iknext[2] * Iknext[1] - Iknext[3] * Iknext[0]);
+    
+    // Update Speed
+    double wr_next = out->wr + Ts * (npp / (2.0 * J)) * (Te - Tload);
 
-    states->ir_alpha = sigma * (
-                                -Lm * (Rs*out->is_alpha - u_alpha) + 
-                                Ls * (Lm*out->wr*out->is_beta + Lr*out->wr*out->ir_beta + Rr*out->ir_alpha)
-                            );
-
-    states->ir_beta = sigma * (
-                                -Lm * (Rs*out->is_beta - u_beta) -
-                                Ls * (Lm*out->wr*out->is_alpha + Lr*out->wr*out->ir_alpha - Rr*out->ir_beta)
-                            );
-
-    // Torque
-    double Te = (npp*Lm/3.0)*(out->ir_alpha*out->is_beta - out->ir_beta*out->is_alpha);
-
-    // Speed
-    states->wr = (npp/(2*J))*(Te - Tload);
-
-    // Euler Discretization
-    out->is_alpha    = out->is_alpha + states->is_alpha * Ts;
-    out->is_beta     = out->is_beta + states->is_beta * Ts;
-    out->ir_alpha    = out->ir_alpha + states->ir_alpha * Ts;
-    out->ir_beta     = out->ir_beta + states->ir_beta * Ts;
-    out->wr          = out->wr + states->wr * Ts;
-
+    // Update Output
+    out->is_alpha = Iknext[0];
+    out->is_beta  = Iknext[1];
+    out->ir_alpha = Iknext[2];
+    out->ir_beta  = Iknext[3];
+    out->wr       = wr_next;
 }
 
 void _updateOutputs(IM_Model_t *self) {

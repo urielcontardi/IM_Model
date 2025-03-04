@@ -61,6 +61,8 @@ typedef enum
     IC,
     WR,
     WMEC,
+    VALPHA,
+    VBETA,
 	TOTAL_OUTPUTS
 } Outputs_t;
 
@@ -111,6 +113,10 @@ __declspec(dllexport) void simuser(t, delt, simInputs, simOut)
     simOut[IC] = (double)pIM->out.ic;
     simOut[WR] = (double)pIM->out.wr;
     simOut[WMEC] = (double)pIM->out.wmec;
+
+    double* privData = (double*)pIM->priv;
+    simOut[VALPHA] = privData[0];
+    simOut[VBETA]  = privData[1];
 
 }
 #endif
