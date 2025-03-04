@@ -51,6 +51,7 @@ typedef enum
     J,
     NPP,
     TS,
+    MODEL,
 	TOTAL_INPUTS
 } Inputs_t;
 
@@ -61,6 +62,9 @@ typedef enum
     IC,
     WR,
     WMEC,
+    TE,
+    VALPHA,
+    VBETA,
 	TOTAL_OUTPUTS
 } Outputs_t;
 
@@ -100,10 +104,12 @@ __declspec(dllexport) void simuser(t, delt, simInputs, simOut)
 	if (t <= delt){
         IM_Init(pIM);
         _setParameters(pIM, simInputs);
+        IM_TypeModel(pIM,(IMType)simInputs[MODEL]);
     }
 
-    _setInputs(pIM, simInputs);
+    
     IM_SimulateStep(pIM);
+    _setInputs(pIM, simInputs);
 
     // double *privData = (double *)pIM->priv;
     simOut[IA] = (double)pIM->out.ia;
@@ -111,7 +117,12 @@ __declspec(dllexport) void simuser(t, delt, simInputs, simOut)
     simOut[IC] = (double)pIM->out.ic;
     simOut[WR] = (double)pIM->out.wr;
     simOut[WMEC] = (double)pIM->out.wmec;
+    simOut[TE]  = (double)pIM->out.Te;
 
+    double* privData = (double*)pIM->priv;
+    simOut[VALPHA] = privData[0];
+    simOut[VBETA]  = privData[1];
+    
 }
 #endif
 

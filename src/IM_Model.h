@@ -49,10 +49,18 @@ typedef struct {
     double ic;
     double wr;
     double wmec;
+    double Te;
 } IMOutputs;
+
+typedef enum {
+    MODEL_A,
+    MODEL_B,
+    MODEL_C
+} IMType;
 
 typedef struct {
     IMParams params;
+    IMType type;
     IMInputs inp;
     IMOutputs out;
     void *priv;
@@ -67,5 +75,6 @@ void IM_Init(IM_Model_t *self);
 void IM_SetParams(IM_Model_t *self, const IMParams *params);
 void IM_SetInputs(IM_Model_t *self, const IMInputs *inputs);
 void IM_SimulateStep(IM_Model_t *self);
+void IM_TypeModel(IM_Model_t *self, IMType model);
 
 #endif // IM_MODEL_H

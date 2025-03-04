@@ -1,7 +1,6 @@
 /// \file		IM_Model.c
 ///
-/// \brief	    FPGA based real-time model of three-phase induction machine
-///             https://ieeexplore.ieee.org/document/8395534
+/// \brief	    
 ///
 /// \author		Uriel Abe Contardi (urielcontardi@hotmail.com)
 /// \date		26-01-2025
@@ -33,16 +32,14 @@
 //                                                                          //
 //////////////////////////////////////////////////////////////////////////////
 typedef struct {
-    double dis_alpha;    // derivative
-    double dis_beta;     // derivative
-    double dfluxR_alpha; // derivative
-    double dfluxR_beta; // derivative
-    double dwmec;       // derivative
     double is_alpha;
     double is_beta;
+    double ir_alpha;
+    double ir_beta;
     double fluxR_alpha;
     double fluxR_beta;
-    double wmec;
+    double wr;
+    double wm;
     double Te;
 } IM_States_t;
 
@@ -54,7 +51,7 @@ typedef struct {
 
 typedef struct {
     IM_InternalInputs_t inp;
-    IM_States_t states;
+    IM_States_t out;
 } IM_PrivateData_t;
 
 //////////////////////////////////////////////////////////////////////////////
@@ -64,8 +61,11 @@ typedef struct {
 //////////////////////////////////////////////////////////////////////////////
 static void _updateInternalParameters(IM_Model_t *self);
 static void _vabc2AphaBeta(IM_Model_t *self);
-static void _updateStates(IM_Model_t *self);
 static void _updateOutputs(IM_Model_t *self);
+
+static void _updateStatesA(IM_Model_t *self);
+static void _updateStatesB(IM_Model_t *self);
+static void _updateStatesC(IM_Model_t *self);
 
 //////////////////////////////////////////////////////////////////////////////
 //                                                                          //
@@ -117,8 +117,32 @@ void IM_SetInputs(IM_Model_t *self, const IMInputs *inputs) {
     _vabc2AphaBeta(self);
 }
 
+void IM_TypeModel(IM_Model_t *self, IMType model)
+{
+    self->type = model;
+    memset(self->priv, 0, sizeof(IM_PrivateData_t));
+}
+
 void IM_SimulateStep(IM_Model_t *self) {
-    _updateStates(self); 
+
+    // Compute selected model
+    switch (self->type )
+    {
+        default:
+        case MODEL_A:
+            _updateStatesA(self);
+            break;
+
+        case MODEL_B:
+            _updateStatesB(self);
+            break;
+
+        case MODEL_C:
+            _updateStatesC(self);
+            break;
+    
+    }
+
     _updateOutputs(self);
 }
 
@@ -148,9 +172,54 @@ void _vabc2AphaBeta(IM_Model_t *self) {
 
 }
 
-void _updateStates(IM_Model_t *self) {
+void _updateStatesA(IM_Model_t *self) {
+    /// Article: FPGA based real-time model of three-phase induction machine
+    /// https://ieeexplore.ieee.org/document/8395534
     IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
-    IM_States_t *states = &privateData->states;
+    IM_States_t *out = &privateData->out;
+    IM_InternalInputs_t *intInputs = &privateData->inp;
+
+    // MIT Parameters
+    double Rs  = self->params.Rs;
+    double Rr  = self->params.Rr;
+    double Lm  = self->params.Lm;
+    double Ls  = self->params.Ls;
+    double Lr  = self->params.Lr;
+    double J   = self->params.J; 
+    double npp = self->params.npp;
+    // double poles = 2*npp;
+    double Ts  = self->params.Ts;
+
+    // Inputs (v_alpha, v_beta)
+    double v_alpha_s = intInputs->valpha;
+    double v_beta_s  = intInputs->vbeta;
+    double Tload     = self->inp.Tload;
+
+    // Article Equations :
+    double dfluxR_alpha = (Rr*Lm/Lr)*out->is_alpha - out->wr * out->fluxR_beta - (Rr/Lr) * out->fluxR_alpha;
+    double dfluxR_beta = (Rr*Lm/Lr)*out->is_beta + out->wr * out->fluxR_alpha - (Rr/Lr) * out->fluxR_beta;
+    double dis_alpha = (Lr/(Lm*Lm - Lr*Ls))*(Rs * out->is_alpha + (Lm/Lr)*dfluxR_alpha - v_alpha_s);
+    double dis_beta = (Lr/(Lm*Lm - Lr*Ls))*(Rs * out->is_beta + (Lm/Lr)*dfluxR_beta - v_beta_s);
+
+    double Te = ((3*npp*Lm)/(2*Lr))*(out->fluxR_alpha*out->is_beta - out->fluxR_beta*out->is_alpha);
+    double dwm = (Te - Tload)/J;
+
+    // Update States
+    out->is_alpha    = out->is_alpha + dis_alpha * Ts;
+    out->is_beta     = out->is_beta + dis_beta * Ts;
+    out->fluxR_alpha = out->fluxR_alpha + dfluxR_alpha * Ts;
+    out->fluxR_beta  = out->fluxR_beta + dfluxR_beta * Ts;
+    out->wm          = out->wm + dwm * Ts;
+    out->wr          = out->wm * npp;
+    out->Te          = Te;
+
+}
+
+void _updateStatesB(IM_Model_t *self) {
+    /// Article: C++ based dynamic model of AC induction motor in discrete time domain
+    /// https://ieeexplore.ieee.org/document/7512961
+    IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
+    IM_States_t *out = &privateData->out;
     IM_InternalInputs_t *intInputs = &privateData->inp;
 
     // MIT Parameters
@@ -163,51 +232,119 @@ void _updateStates(IM_Model_t *self) {
     double npp = self->params.npp;
     double Ts  = self->params.Ts;
 
-    // Last States
-    double is_alpha = states->is_alpha;
-    double is_beta = states->is_beta;
-    double dfluxR_alpha = states->dfluxR_alpha;
-    double dfluxR_beta = states->dfluxR_beta;
-    double fluxR_alpha = states->fluxR_alpha;
-    double fluxR_beta = states->fluxR_beta;
-    double wmec = states->wmec;
-    double w = wmec * npp;
-    double Te = states->Te;
+    // Inputs (v_alpha, v_beta)
+    double v_alpha_s = intInputs->valpha;
+    double v_beta_s  = intInputs->vbeta;
+    double v_alpha_r = 0.0f; // Induction Motor
+    double v_beta_r  = 0.0f;
+    double Tload     = self->inp.Tload;
+    double sigma = 1.0 / (Lm*Lm - Lr*Ls);
+    double wr = out->wr;
 
-    // Inputs (u_alpha, u_beta)
-    double u_alpha = intInputs->valpha;
-    double u_beta = intInputs->vbeta;
-    double Tload = self->inp.Tload;
+    // A_d / B_d Matrix
+    double Ad[4][4] = {
+        {1.0 + sigma * Ts * (Lr * Rs),  -sigma * Ts * (Lm * Lm * wr), -sigma * Ts * (Lm * Rr), -sigma * Ts * (Lm * Lr * wr)},
+        {sigma * Ts * (Lm * Lm * wr),    1.0 + sigma * Ts * (Lr * Rs), sigma * Ts * (Lm * Lr * wr), -sigma * Ts * (Lm * Rr)},
+        {-sigma * Ts * (Lm * Rs),       sigma * Ts * (Lm * Ls * wr), 1.0 + sigma * Ts * (Ls * Rr), sigma * Ts * (Lr * Ls * wr)},
+        {-sigma * Ts * (Lm * Ls * wr), -sigma * Ts * (Lm * Rs), -sigma * Ts * (Lr * Ls * wr), 1.0 + sigma * Ts * (Ls * Rr)}
+    };
 
-    // Derivative: Currents / Flux / Speed
-    states->dis_alpha = (1/Ls)*(u_alpha - Rs*is_alpha - Lm*dfluxR_alpha);
-    states->dis_beta = (1/Ls)*(u_beta - Rs*is_beta - Lm*dfluxR_beta);
-    states->dfluxR_alpha = (Rr*Lm/Lr)*is_alpha + w*fluxR_beta - (Rr/Lr)*fluxR_alpha;
-    states->dfluxR_beta = (Rr*Lm/Lr)*is_beta + w*fluxR_alpha - (Rr/Lr)*fluxR_beta;
-    states->dwmec = (Te-Tload)/J;
+    double Bd[4][4] = {
+        {-sigma * Lr * Ts,  0,                sigma * Lm * Ts,   0},
+        {0,                 -sigma * Lr * Ts, 0,                 sigma * Lm * Ts},
+        {sigma * Lm * Ts,   0,                -sigma * Ls * Ts,  0},
+        {0,                 sigma * Lm * Ts,  0,                 -sigma * Ls * Ts}
+    };
 
-    // Update Torque
-    states->Te = ((3*npp*Lm)/(2*Lr))*(fluxR_alpha*is_beta - fluxR_beta*is_alpha);
+    // States
+    double Ik[4] = {out->is_alpha, out->is_beta, out->ir_alpha, out->ir_beta};
+    double Vk[4] = {v_alpha_s, v_beta_s, v_alpha_r, v_beta_r};
+    double Iknext[4] = {0};
 
     // Update States
-    states->is_alpha    = states->is_alpha + states->dis_alpha * Ts;
-    states->is_beta     = states->is_beta + states->dis_beta * Ts;
-    states->fluxR_alpha = states->fluxR_alpha + states->dfluxR_alpha * Ts;
-    states->fluxR_beta  = states->fluxR_beta + states->dfluxR_beta * Ts;
-    states->wmec        = states->wmec + states->dwmec * Ts;
+    for (int i = 0; i < 4; i++) {
+        Iknext[i] = 0;
+        for (int j = 0; j < 4; j++) {
+            Iknext[i] += Ad[i][j] * Ik[j] + Bd[i][j] * Vk[j];
+        }
+    }
+
+    // Update Torque / Speed
+    double Te = (npp * Lm / 3.0) * (Iknext[2] * Iknext[1] - Iknext[3] * Iknext[0]);
+    double dwm = (Te - Tload)/J;
+
+    // Update Output
+    out->is_alpha = Iknext[0];
+    out->is_beta  = Iknext[1];
+    out->ir_alpha = Iknext[2];
+    out->ir_beta  = Iknext[3];
+    out->wm       = out->wm + Ts * dwm;
+    out->wr       = out->wm * npp;
+    out->Te       = Te;
+}
+
+void _updateStatesC(IM_Model_t *self) {
+    /// Article: Real-Time Emulator of an Induction Motor: FPGA-based Implementation
+    /// https://ieeexplore.ieee.org/document/6421152/
+    IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
+    IM_States_t *out = &privateData->out;
+    IM_InternalInputs_t *intInputs = &privateData->inp;
+
+    // MIT Parameters
+    double Rs  = self->params.Rs;
+    double Rr  = self->params.Rr;
+    double Lm  = self->params.Lm;
+    double Ls  = self->params.Ls;
+    double Lr  = self->params.Lr;
+    double J   = self->params.J; 
+    double npp = self->params.npp;
+    double Ts  = self->params.Ts;
+
+    // Inputs (v_alpha, v_beta)
+    double v_alpha_s = intInputs->valpha;
+    double v_beta_s  = intInputs->vbeta;
+    double Tload     = self->inp.Tload;
+
+    // Constanst
+    double Tr = Lr/Rr;
+    double sigma = 1.0 - ((Lm*Lm)/(Ls*Lr));
+    double K = Lm/(sigma * Ls * Lr);
+    double gama = (Rs/(sigma * Ls)) + ((Rr*Lm*Lm)/(sigma*Ls*Lr*Lr));
+    
+    // Derivative
+    double dis_alpha = 0.0f;
+    double dis_beta = 0.0f;
+    double dfluxR_alpha = 0.0f;
+    double dfluxR_beta = 0.0f;
+    double dwm = 0.0f;
+
+    dis_alpha = -gama*out->is_alpha + (out->fluxR_alpha*K/Tr) + npp*out->wm*K*out->fluxR_beta + (v_alpha_s/(sigma*Ls));
+    dis_beta = -gama*out->is_beta + (out->fluxR_beta*K/Tr) - npp*out->wm*K*out->fluxR_alpha + (v_beta_s/(sigma*Ls));
+    dfluxR_alpha = (out->is_alpha*Lm/Tr) - out->fluxR_alpha/Tr - npp*out->wm*out->fluxR_beta;
+    dfluxR_beta = (out->is_beta*Lm/Tr) - out->fluxR_beta/Tr + npp*out->wm*out->fluxR_alpha;
+    dwm = (npp*Lm/(J*Lr))*(out->fluxR_alpha*out->is_beta - out->fluxR_beta*out->is_alpha) - (Tload/J);
+
+    // Compute next value
+    out->is_alpha = out->is_alpha + dis_alpha * Ts;
+    out->is_beta  = out->is_beta + dis_beta * Ts;
+    out->fluxR_alpha = out->fluxR_alpha + dfluxR_alpha * Ts;
+    out->fluxR_beta  = out->fluxR_beta + dfluxR_beta * Ts;
+    out->wm = out->wm + dwm * Ts;
+
 }
 
 void _updateOutputs(IM_Model_t *self) {
 
     IM_PrivateData_t *privateData = (IM_PrivateData_t *)self->priv;
-    IM_States_t *states = &privateData->states;
+    IM_States_t *out = &privateData->out;
     IM_InternalInputs_t *intInputs = &privateData->inp;
 
     // Inverse Clarke Transform (αβ -> abc)
-    self->out.ia = states->is_alpha + intInputs->v0;
-    self->out.ib = -0.5 * states->is_alpha + (sqrt(3.0) / 2.0) * states->is_beta + intInputs->v0;
-    self->out.ic = -0.5 * states->is_alpha - (sqrt(3.0) / 2.0) * states->is_beta + intInputs->v0;
-    self->out.wmec = states->wmec;
-    self->out.wr = states->wmec * self->params.npp;
+    self->out.ia = out->is_alpha + intInputs->v0;
+    self->out.ib = -0.5 * out->is_alpha + (sqrt(3.0) / 2.0) * out->is_beta + intInputs->v0;
+    self->out.ic = -0.5 * out->is_alpha - (sqrt(3.0) / 2.0) * out->is_beta + intInputs->v0;
+    self->out.wmec = out->wm;
+    self->out.wr = out->wr;
+    self->out.Te = out->Te;
 
 }
